@@ -12,6 +12,7 @@ spotify_api_spec = reduce_openapi_spec(raw_spotify_api_spec)
 def construct_spotify_auth_headers(raw_spec: dict):
     scopes = list(raw_spec['components']['securitySchemes']['oauth_2_0']['flows']['authorizationCode']['scopes'].keys())
     access_token = util.prompt_for_user_token(scope=','.join(scopes))
+    # print(access_token)
     return {
         'Authorization': f'Bearer {access_token}'
     }
@@ -23,5 +24,5 @@ requests_wrapper = RequestsWrapper(headers=headers)
 llm = ChatOpenAI(model_name="gpt-3.5-turbo", temperature=0.2)
 
 spotify_agent = planner.create_openapi_agent(spotify_api_spec, requests_wrapper, llm)
-user_query = "Suggest me 5 romantic song"
+user_query = "Can you show taylor swift songs?"
 spotify_agent.run(user_query)
