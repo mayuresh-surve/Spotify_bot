@@ -1,6 +1,7 @@
-from langchain.agents import Tool, AgentExecutor, LLMSingleActionAgent, AgentOutputParser
+from langchain.agents import Tool, AgentExecutor, LLMSingleActionAgent, AgentOutputParser, load_tools
 from langchain.prompts import StringPromptTemplate
-from langchain import OpenAI, LLMChain
+from langchain import LLMChain, SerpAPIWrapper, WikipediaAPIWrapper
+from langchain.chat_models import ChatOpenAI
 from typing import List, Union, Callable
 from langchain.schema import AgentAction, AgentFinish, Document
 from langchain.requests import RequestsWrapper
@@ -28,30 +29,41 @@ headers = construct_spotify_auth_headers(raw_spotify_api_spec)
 spotify_requests_wrapper = RequestsWrapper(headers=headers)
 
 # Define which tools the agent can use to answer user queries
-spotify_tool = Tool(
-        name = "Spotify",
-        func=spotify_requests_wrapper.get,
-        description="useful when you have query related to songs"
-    )
-def fake_func(inp: str) -> str:
-    return "foo"
-fake_tools = [
-    Tool(
-        name=f"foo-{i}", 
-        func=fake_func, 
-        description=f"a silly function that you can use to get more information about the number {i}"
-    ) 
-    for i in range(10)
-]
-ALL_TOOLS = [spotify_tool] + fake_tools
+search_api = SerpAPIWrapper()
+wiki_api = WikipediaAPIWrapper()
+tools = [Tool(
+        name = "Search",
+        func=search_api.run,
+        description="useful for when you need to answer questions about current events",
+    ), Tool(
+        name="Wikipedia",
+        func=wiki_api.run,
+        description="Useful for when you need to answer general questions about people, places, companies, historical events"
+    )]
+# spotify_tool = Tool(
+#         name = "Spotify",
+#         func=spotify_requests_wrapper.get,
+#         description="useful when you have query related to songs"
+#     )
+# def fake_func(inp: str) -> str:
+#     return "foo"
+# fake_tools = [
+#     Tool(
+#         name=f"foo-{i}", 
+#         func=fake_func, 
+#         description=f"a silly function that you can use to get more information about the number {i}"
+#     ) 
+#     for i in range(10)
+# ]
+# ALL_TOOLS = [spotify_tool] + fake_tools
 
-docs = [Document(page_content=t.description, metadata={"index": i}) for i, t in enumerate(ALL_TOOLS)]
+docs = [Document(page_content=t.description, metadata={"index": i}) for i, t in enumerate(tools)]
 vector_store = FAISS.from_documents(docs, OpenAIEmbeddings())
 retriever = vector_store.as_retriever()
 
 def get_tools(query):
     docs = retriever.get_relevant_documents(query)
-    return [ALL_TOOLS[d.metadata["index"]] for d in docs]
+    return [tools[d.metadata["index"]] for d in docs]
 
 # Set up the base template
 template = """Answer the following questions as best you can. You have access to the following tools:
@@ -63,7 +75,7 @@ Use the following format:
 Question: the input question you must answer
 Thought: you should always think about what to do
 Action: the action to take, should be one of [{tool_names}]
-Action Input: Generate an API call to work on your thought and create an observation
+Action Input: the input to the action
 Observation: the result of the action
 ... (this Thought/Action/Action Input/Observation can repeat N times)
 Thought: I now know the final answer
@@ -129,10 +141,10 @@ class CustomOutputParser(AgentOutputParser):
     
 output_parser = CustomOutputParser()
 
-llm = OpenAI(temperature=0)
+llm = ChatOpenAI(model_name="gpt-3.5-turbo", temperature=0)
 # LLM chain consisting of the LLM and a prompt
 llm_chain = LLMChain(llm=llm, prompt=prompt)
-tool_names = [tool.name for tool in ALL_TOOLS]
+tool_names = [tool.name for tool in tools]
 agent = LLMSingleActionAgent(
     llm_chain=llm_chain, 
     output_parser=output_parser,
@@ -140,6 +152,6 @@ agent = LLMSingleActionAgent(
     allowed_tools=tool_names
 )
 
-agent_executor = AgentExecutor.from_agent_and_tools(agent=agent, tools=ALL_TOOLS, verbose=True)
+agent_executor = AgentExecutor.from_agent_and_tools(agent=agent, tools=tools, verbose=True)
 
-agent_executor.run("Can you show taylor swift songs?")
+agent_executor.run("When was barak obama born?")
