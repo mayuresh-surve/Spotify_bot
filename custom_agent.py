@@ -1,15 +1,16 @@
-from langchain.agents import Tool, AgentExecutor, LLMSingleActionAgent, AgentOutputParser, AgentType
+from langchain.agents import (Tool, AgentExecutor, LLMSingleActionAgent,
+                              AgentOutputParser, AgentType, create_json_agent, create_openapi_agent, initialize_agent)
 from langchain.prompts import StringPromptTemplate
 from langchain import LLMChain, SerpAPIWrapper, WikipediaAPIWrapper
 from langchain.chat_models import ChatOpenAI
 from typing import List, Union, Callable
 from langchain.schema import AgentAction, AgentFinish, Document
-from langchain.requests import Requests
+from langchain.requests import RequestsWrapper
 import os
 import re
 import yaml
 from langchain.agents.agent_toolkits.openapi.spec import reduce_openapi_spec
-from langchain.agents.agent_toolkits import OpenAPIToolkit
+from langchain.agents.agent_toolkits import OpenAPIToolkit, JsonToolkit
 from langchain.agents.agent_toolkits.openapi import planner
 import spotipy.util as util
 from langchain.vectorstores import FAISS
@@ -20,11 +21,7 @@ with open("spotify_openapi.yaml") as f:
     raw_spotify_api_spec = yaml.load(f, Loader=yaml.Loader)
 spotify_api_spec = reduce_openapi_spec(raw_spotify_api_spec)
 json_spec = JsonSpec(dict_=raw_spotify_api_spec, max_value_length=4000)
-
-with open("openai_openapi.yaml") as f:
-    raw_openai_api_spec = yaml.load(f, Loader=yaml.Loader)
-openai_api_spec = reduce_openapi_spec(raw_openai_api_spec)
-openai_specs = JsonSpec(dict_=raw_openai_api_spec, max_value_length=4000)
+# spotify_toolkit = JsonToolkit(spec=json_spec)
 
 
 def construct_spotify_auth_headers(raw_spec: dict):
@@ -39,43 +36,48 @@ def construct_spotify_auth_headers(raw_spec: dict):
 
 # Get API credentials.
 headers = construct_spotify_auth_headers(raw_spotify_api_spec)
-spotify_requests_wrapper = Requests(headers=headers)
+spotify_requests_wrapper = RequestsWrapper(headers=headers)
 
-json_toolkit = OpenAPIToolkit.from_llm(ChatOpenAI(
-    model_name="gpt-3.5-turbo", temperature=0.1), json_spec, spotify_requests_wrapper, verbose=True)
+# openapi_toolkit = OpenAPIToolkit.from_llm(ChatOpenAI(
+#     model_name="gpt-3.5-turbo", temperature=0.1), json_spec, spotify_requests_wrapper)
+
+openapi_agent_executor = planner.create_openapi_agent(spotify_api_spec, spotify_requests_wrapper,
+                                                      llm=ChatOpenAI(
+                                                          temperature=0, verbose=True)
+                                                      )
+# spotify_agent_executor = create_json_agent(llm=ChatOpenAI(
+#     temperature=0.1), toolkit=spotify_toolkit, verbose=True)
 
 # Define which tools the agent can use to answer user queries
-search_api = SerpAPIWrapper()
 wiki_api = WikipediaAPIWrapper()
-tools = json_toolkit.get_tools()
+tools = [
+    Tool(
+        name="Wikipedia",
+        func=wiki_api.run,
+        description="Useful for when you need to answer general questions about people, places, companies, historical events"),
+    Tool(
+        name="Spotify",
+        func=openapi_agent_executor.run,
+        description="useful when you have query related to songs"
+    )
+]
 # [
-    #     Tool(
-    #     name="Search",
-    #     func=search_api.run,
-    #     description="useful for when you need to answer questions about current events",
-    # ),
-    # Tool(
-    #     name="Wikipedia",
-    #     func=wiki_api.run,
-    #     description="Useful for when you need to answer general questions about people, places, companies, historical events"
-    # )
-# ] 
+#     Tool(
+#     name="Search",
+#     func=search_api.run,
+#     description="useful for when you need to answer questions about current events",
+# ),
+# Tool(
+#     name="Wikipedia",
+#     func=wiki_api.run,
+#     description="Useful for when you need to answer general questions about people, places, companies, historical events"
+# )
+# ]
 # spotify_tool = Tool(
 #         name = "Spotify",
 #         func=spotify_requests_wrapper.get,
 #         description="useful when you have query related to songs"
 #     )
-# def fake_func(inp: str) -> str:
-#     return "foo"
-# fake_tools = [
-#     Tool(
-#         name=f"foo-{i}",
-#         func=fake_func,
-#         description=f"a silly function that you can use to get more information about the number {i}"
-#     )
-#     for i in range(10)
-# ]
-# ALL_TOOLS = [spotify_tool] + fake_tools
 
 docs = [Document(page_content=t.description, metadata={
                  "index": i}) for i, t in enumerate(tools)]
@@ -86,8 +88,6 @@ retriever = vector_store.as_retriever()
 def get_tools(query):
     docs = retriever.get_relevant_documents(query)
     return [tools[d.metadata["index"]] for d in docs]
-
-# print(get_tools("Show me my spotify playlist"))
 
 
 # Set up the base template
@@ -117,8 +117,6 @@ Question: {input}
 class CustomPromptTemplate(StringPromptTemplate):
     # The template to use
     template: str
-    ############## NEW ######################
-    # The list of tools available
     tools_getter: Callable
 
     def format(self, **kwargs) -> str:
@@ -173,7 +171,7 @@ class CustomOutputParser(AgentOutputParser):
 
 output_parser = CustomOutputParser()
 
-llm = ChatOpenAI(model_name="gpt-3.5-turbo", temperature=0)
+llm = ChatOpenAI(model_name="gpt-3.5-turbo", temperature=0.2, verbose=True)
 # LLM chain consisting of the LLM and a prompt
 llm_chain = LLMChain(llm=llm, prompt=prompt)
 tool_names = [tool.name for tool in tools]
@@ -184,7 +182,10 @@ agent = LLMSingleActionAgent(
     allowed_tools=tool_names
 )
 
-agent_executor = AgentExecutor.from_agent_and_tools(
-    agent=agent, tools=tools, verbose=True)
+# agent_executor = AgentExecutor.from_agent_and_tools(
+#     agent=AgentType.ZERO_SHOT_REACT_DESCRIPTION, tools=tools, verbose=True)
 
-agent_executor.run("Show me my playlists")
+multi_agent = initialize_agent(
+    llm=llm, tools=tools, agent=AgentType.ZERO_SHOT_REACT_DESCRIPTION, verbose=True)
+
+multi_agent.run("What are 2 famous Taylor Swift songs?")
